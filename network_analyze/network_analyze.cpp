@@ -116,6 +116,111 @@ UDP_HDR *udpheader;
 ICMP_HDR *icmpheader;
 const u_char *data;
 
+const char client_ip[] = "192.168.1.100";
+
+struct data_head {
+	int unuse;
+	char type;	//包类型
+	int areano;		//区号
+	int record;//记录数//sww20060410复用,当上传挂失信息时,为发卡中心区号
+	int maxflowno;	//最大流水号
+	int size;	//数据缓存大小
+	// add check code, by wjzhe
+	u_int32_t crc;		//CRC校验，校验内容为数据包内容。如果数据包为空，这里填0
+	char reserved[2]; //保留字，填0
+	u_int8_t chk_add;		 //包头累加和校验，内容包括type 至chk_add之前的数据
+	u_int8_t chk_xor;		 //包头异或和校验，内容包括type 至chk_xor之前的数据
+};
+
+u_int8_t net_packet_add(struct data_head *nhead)
+{
+	u_int8_t x = 0;
+	u_int8_t *p = (u_int8_t *)nhead;
+	int i;
+	int n = offsetof(struct data_head, chk_add);
+
+	for (i = 4; i < n; i++) {	// 远离unuse
+		x += p[i];
+	}
+	return x;
+}
+
+u_int8_t net_packet_xor(struct data_head *nhead)
+{
+	u_int8_t x = 0;
+	u_int8_t *p = (u_int8_t *)nhead;
+	int i;
+	int n = offsetof(struct data_head, chk_xor);
+
+	for (i = 4; i < n; i++) {	// 远离unuse
+		x ^= p[i];
+	}
+	return x;
+}
+
+int net_packet_check_head(struct data_head *nhead)
+{
+	if (nhead->chk_add != net_packet_add(nhead)) {
+		fprintf(logfile, "包头校验错误 add\n");
+		return 0;
+	}
+	if (nhead->chk_xor != net_packet_xor(nhead)) {
+		fprintf(logfile, "包头校验错误 xor\n");
+		return 0;
+	}
+	return 1;
+}
+
+#define logtcp(s_ip, d_ip, th, fmt, ...) do { \
+	fprintf(logfile, "%s:%d -> %s:%d: " fmt, s_ip, ntohs(th->source_port), d_ip, ntohs(th->dest_port), ##__VA_ARGS__);\
+} while (0)
+
+int parse_tcp_packet(IPV4_HDR *ih, TCP_HDR *th, const u_char *data, int data_size)
+{
+	memset(&source, 0, sizeof(source));
+	source.sin_addr.s_addr = ih->ip_srcaddr;
+	char *s_ip = inet_ntoa(source.sin_addr);
+
+	memset(&dest, 0, sizeof(dest));
+	dest.sin_addr.s_addr = ih->ip_destaddr;
+	char *d_ip = inet_ntoa(dest.sin_addr);
+
+	int sd = -1;
+	if (strcmp(client_ip, s_ip) == 0) {
+		// client is src
+		sd = 0;
+	} else if (strcmp(client_ip, d_ip) == 0) {
+		// client is dst
+		sd = 1;
+	} else {
+		return -1;
+	}
+	if (th->syn) {
+		logtcp(s_ip, d_ip, th, "发起连接\n");
+		return 0;
+	}
+	if (th->rst) {
+		logtcp(s_ip, d_ip, th, "重建连接\n");
+		return 0;
+	}
+	if (th->fin) {
+		logtcp(s_ip, d_ip, th, "释放连接\n");
+		return 0;
+	}
+	if (data_size) {
+		// 分析tcp数据
+		logtcp(s_ip, d_ip, th, "收到数据 %d\n", data_size);
+		if (sizeof(struct data_head) > data_size) {
+			return 0;
+		}
+		struct data_head *nhead = (struct data_head *)data;
+		if (net_packet_check_head(nhead)) {
+			logtcp(s_ip, d_ip, th, "收到包头正常 type %d\n", nhead->type);
+		}
+	}
+	return 0;
+}
+
 void packet_handler(u_char *param, const struct pcap_pkthdr *header, const u_char *pkt_data)
 {
 	struct tm *ltime;
@@ -318,8 +423,10 @@ void PrintTcpPacket(const u_char* Buffer, int Size)
 	data = (Buffer + sizeof(ETHER_HDR) + iphdrlen + tcphdrlen);
 	data_size = (Size - sizeof(ETHER_HDR) - iphdrlen - tcphdrlen);
 
+
 	fprintf(logfile, "\n\n***********************TCP Packet*************************\n");
 
+	parse_tcp_packet(iphdr, tcpheader, data, data_size);
 	PrintIpHeader(Buffer, Size);
 
 	fprintf(logfile, "\n");

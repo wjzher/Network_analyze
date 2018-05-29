@@ -327,3 +327,15 @@ ASALocalRun/
 
 # MFractors (Xamarin productivity tool) working folder 
 .mfractor/
+
+*.PO
+*.PR
+*.PRI
+*.PS
+*.SearchResults
+*.WK3
+*.IAB
+*.IAD
+*.IMB
+*.IMD
+*.PFI
